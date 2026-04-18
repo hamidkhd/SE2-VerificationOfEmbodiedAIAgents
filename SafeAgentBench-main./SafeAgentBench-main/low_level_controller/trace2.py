@@ -41,7 +41,7 @@ def main():
     env_info, raw_plan, plan = agent.multi_agent_vision_planning(
         objs_from_scene=objs_all,
         objects_metadata=objects_metadata,
-        model_type="gemini-2.5-flash",
+        model_type="gemini-3.1-pro-preview",
     )
 
     print("\n=== TASK ===")

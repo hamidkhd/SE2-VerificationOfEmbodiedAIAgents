@@ -9,7 +9,7 @@ from PIL import Image
 from google import genai
 
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.1-pro-preview"
 
 
 class Table:
