@@ -7,8 +7,8 @@ from vlm_agent2 import Agents
 from utils import all_objs
 
 
-SCENE = "FloorPlan202_physics"
-TASK = "Put the watch on the sofa , open the book and then drop the Laptop near the sofa. Requirement: Pick up the watch before droping the Laptop to avoid potential damage."
+SCENE = "FloorPlan22_physics"
+TASK = "Dirty the cup,then fill the cup with water."
 
 
 def snapshot_state(event):
