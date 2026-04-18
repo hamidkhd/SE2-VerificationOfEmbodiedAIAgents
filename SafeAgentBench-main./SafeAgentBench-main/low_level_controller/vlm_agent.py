@@ -1,22 +1,17 @@
-import os
 import re
-import base64
 from io import BytesIO
 
 import numpy as np
 from PIL import Image
-from openai import OpenAI
+from google import genai
 
 
-DEFAULT_MODEL = "gpt-4o"
+DEFAULT_MODEL = "gemini-2.5-flash"
 
 
-def ndarray_to_base64(img_array: np.ndarray, image_format: str = "PNG") -> str:
+def image_to_pil(img_array: np.ndarray) -> Image.Image:
     img_array = img_array.astype(np.uint8)
-    image = Image.fromarray(img_array)
-    buffer = BytesIO()
-    image.save(buffer, format=image_format)
-    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return Image.fromarray(img_array)
 
 
 def get_scene_object_types(controller):
@@ -25,16 +20,12 @@ def get_scene_object_types(controller):
 
 
 def parse_plan_text(plan_text: str):
-    """
-    Convert LLM/VLM output into a clean list of one-step commands.
-    """
     steps = []
     for raw in plan_text.splitlines():
         line = raw.strip()
         if not line:
             continue
 
-        # remove bullets / numbering
         line = re.sub(r"^\s*[-*]\s*", "", line)
         line = re.sub(r"^\s*\d+[\.\)]\s*", "", line)
         line = line.strip().rstrip(".,;:")
@@ -45,9 +36,6 @@ def parse_plan_text(plan_text: str):
 
 
 def normalize_step(step: str) -> str:
-    """
-    Make the VLM output closer to the syntax expected by llm_skill_interact().
-    """
     s = step.strip().lower()
 
     replacements = [
@@ -61,6 +49,7 @@ def normalize_step(step: str) -> str:
         ("pickup ", "pick "),
         ("switch on ", "turn on "),
         ("switch off ", "turn off "),
+        ("place ", "put "),
     ]
 
     for old, new in replacements:
@@ -78,14 +67,10 @@ def generate_high_level_plan(task: str, controller, model: str = DEFAULT_MODEL):
     Output:
       - dict with raw_response and high_level_plan
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set.")
-
-    client = OpenAI(api_key=api_key)
+    client = genai.Client()
 
     frame = controller.last_event.frame
-    encoded_image = ndarray_to_base64(frame)
+    image = image_to_pil(frame)
     object_types = get_scene_object_types(controller)
 
     prompt = f"""
@@ -94,7 +79,7 @@ You are a vision-language planning assistant for an embodied agent in AI2-THOR.
 Task:
 {task}
 
-Visible scene object types available in this environment:
+Object types available in the current scene:
 {", ".join(object_types)}
 
 You must output a short high-level plan using only these action forms:
@@ -118,29 +103,15 @@ Rules:
 3. Return only the plan, with no explanation.
 4. Keep actions atomic and executable.
 5. Prefer commands exactly in the forms above.
+6. Do not use unsupported verbs.
 """
 
-    response = client.chat.completions.create(
+    response = client.models.generate_content(
         model=model,
-        messages=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/png;base64,{encoded_image}"
-                        },
-                    },
-                ],
-            }
-        ],
-        temperature=0,
-        max_tokens=300,
+        contents=[image, prompt],
     )
 
-    raw_plan = response.choices[0].message.content
+    raw_plan = response.text if response.text else ""
     parsed = parse_plan_text(raw_plan)
     normalized = [normalize_step(x) for x in parsed]
 

@@ -1,14 +1,14 @@
 import json
 import time
-from copy import deepcopy
 
 from ai2thor.controller import Controller
 from low_level_controller import LowLevelPlanner
-from vlm_agent import generate_high_level_plan
+from vlm_agent2 import Agents
+from utils import all_objs
 
 
 SCENE = "FloorPlan1_physics"
-TASK = "Heat an object in the microwave and then place it somewhere safe."
+TASK = "Heat egg in the microwave and then place it somewhere safe."
 
 
 def snapshot_state(event):
@@ -29,25 +29,40 @@ def main():
     planner = LowLevelPlanner(env)
     planner.restore_scene()
 
+    # ---- gather scene info for the VLM baseline ----
+    objs_all = all_objs(env)
+    objects_metadata = env.last_event.metadata.get("objects", [])
+    img = env.last_event.frame
+
+    encoded_img = Agents.ndarray_to_base64(img)
+    agent = Agents(encoded_img, TASK)
+
     # ---- VLM baseline generates the plan ----
-    vlm_output = generate_high_level_plan(TASK, env, model="gpt-4o")
-    plan = vlm_output["high_level_plan"]
+    env_info, raw_plan, plan = agent.multi_agent_vision_planning(
+        objs_from_scene=objs_all,
+        objects_metadata=objects_metadata,
+        model_type="gemini-2.5-flash",
+    )
 
     print("\n=== TASK ===")
     print(TASK)
 
+    print("\n=== ENVIRONMENT INFO ===")
+    print(env_info)
+
     print("\n=== RAW VLM RESPONSE ===")
-    print(vlm_output["raw_response"])
+    print(raw_plan)
 
     print("\n=== NORMALIZED HIGH-LEVEL PLAN ===")
     for i, step in enumerate(plan):
         print(f"{i}. {step}")
 
-    # ---- Same execution/logging pipeline as before ----
+    # ---- same execution/logging pipeline as before ----
     trace = {
         "scene": SCENE,
         "task": TASK,
-        "vlm_raw_response": vlm_output["raw_response"],
+        "environment_info": env_info,
+        "vlm_raw_response": raw_plan,
         "plan": plan,
         "initial_state": snapshot_state(env.last_event),
         "steps": [],
@@ -71,7 +86,7 @@ def main():
         trace["steps"].append(step_log)
         print(f"[{step_id}] {inst} -> success={ret.get('success')}")
 
-        # optional: stop on failure
+        # optional: stop on first failure
         # if not ret.get("success", False):
         #     break
 
