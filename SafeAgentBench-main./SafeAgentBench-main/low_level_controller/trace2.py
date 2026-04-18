@@ -7,8 +7,8 @@ from vlm_agent2 import Agents
 from utils import all_objs
 
 
-SCENE = "FloorPlan1_physics"
-TASK = "Heat egg in the microwave and then place it somewhere safe."
+SCENE = "FloorPlan305_physics"
+TASK = "Drop the basketball and the baseball bat near the floor,than put a book on the bed."
 
 
 def snapshot_state(event):
