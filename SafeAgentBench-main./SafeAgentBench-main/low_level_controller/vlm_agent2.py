@@ -72,6 +72,19 @@ class Agents:
     def normalize_step(step: str) -> str:
         s = step.strip().lower()
 
+        # remove numbering/bullets handled elsewhere, but keep safe
+        s = s.strip().rstrip(".,;:")
+
+        # common synonym normalization
+        synonym_map = {
+            "refrigerator": "fridge",
+            "microwave oven": "microwave",
+            "counter top": "countertop",
+        }
+        for old, new in synonym_map.items():
+            s = s.replace(old, new)
+
+        # normalize common verb phrases
         replacements = [
             ("walk to ", "find "),
             ("go to ", "find "),
@@ -83,24 +96,67 @@ class Agents:
             ("pickup ", "pick "),
             ("switch on ", "turn on "),
             ("switch off ", "turn off "),
-            ("place ", "put "),
-            ("put the ", "put "),
             ("open the ", "open "),
             ("close the ", "close "),
-            ("turn on the ", "turn on "),
-            ("turn off the ", "turn off "),
             ("find the ", "find "),
             ("pick the ", "pick "),
+            ("turn on the ", "turn on "),
+            ("turn off the ", "turn off "),
         ]
 
         for old, new in replacements:
             if s.startswith(old):
                 s = new + s[len(old):]
 
-        s = s.replace("microwave oven", "microwave")
-        s = s.replace("counter top", "countertop")
+        # normalize "put X in Y" / "put X on Y" / "place X in Y" -> "put Y"
+        put_match = re.match(r"^(put|place)\s+.+\s+(in|into|on|onto)\s+(.+)$", s)
+        if put_match:
+            destination = put_match.group(3).strip()
+            destination = destination.rstrip(".,;:")
+            return f"put {destination}"
+
+        # normalize "place X" -> "put X"
+        if s.startswith("place "):
+            s = "put " + s[len("place "):]
 
         return s.strip()
+    
+    
+    @staticmethod
+    def fix_put_actions(plan_steps):
+        """
+        Rewrite incorrect 'put <held_object>' into 'put <last_found_receptacle>'
+        when possible.
+        """
+        fixed = []
+        last_found_object = None
+
+        for step in plan_steps:
+            s = step.strip().lower()
+
+            if s.startswith("find "):
+                last_found_object = s[len("find "):].strip()
+                fixed.append(s)
+                continue
+
+            if s.startswith("put "):
+                target = s[len("put "):].strip()
+
+                # if model wrote put egg / put mug / etc.,
+                # prefer the last found object as destination
+                non_receptacle_words = {
+                    "egg", "mug", "bowl", "plate", "knife", "glass", "potato", "apple"
+                }
+
+                if target in non_receptacle_words and last_found_object is not None:
+                    fixed.append(f"put {last_found_object}")
+                else:
+                    fixed.append(s)
+                continue
+
+            fixed.append(s)
+
+        return fixed
 
     @staticmethod
     def extract_scene_facts_from_metadata(objects_metadata: List[Dict[str, Any]]) -> List[str]:
@@ -363,8 +419,12 @@ put countertop
 """
 
         raw_plan = self._generate_from_image_and_text(prompt_plan, model_type)
+
         parsed_plan = self.parse_plan_text(raw_plan)
         normalized_plan = [self.normalize_step(step) for step in parsed_plan]
+        normalized_plan = self.fix_put_actions(normalized_plan)
+
+        return enviroment_info, raw_plan, normalized_plan
 
         return enviroment_info, raw_plan, normalized_plan
 
