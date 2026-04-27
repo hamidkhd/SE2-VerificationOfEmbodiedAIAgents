@@ -5,10 +5,16 @@ import base64
 from typing import List, Dict, Any, Optional, Set
 import numpy as np
 from PIL import Image
-from google import genai
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part
+from google.oauth2 import service_account
 
 
 GEMINI_MODEL = "gemini-2.5-pro"
+
+KEY_PATH = "cred.json"
+PROJECT_ID = "robust-slice-493713-e1"
+LOCATION = "us-central1"
 
 
 class Table:
@@ -29,7 +35,14 @@ class Agents:
         """
         self.encoded_image = image
         self.task_description = task_description
-        self.client = genai.Client()
+
+        creds = service_account.Credentials.from_service_account_file(KEY_PATH)
+
+        vertexai.init(
+            project=PROJECT_ID,
+            location=LOCATION,
+            credentials=creds
+        )
 
     # ----------------------------
     # Image helpers
@@ -280,9 +293,19 @@ class Agents:
     def _generate_from_image_and_text(self, prompt: str, model_type: str = GEMINI_MODEL) -> str:
         image = self.base64_to_pil(self.encoded_image)
 
-        response = self.client.models.generate_content(
-            model=model_type,
-            contents=[image, prompt],
+        img_buffer = io.BytesIO()
+        image.save(img_buffer, format="PNG")
+        img_bytes = img_buffer.getvalue()
+
+        image_part = Part.from_data(
+            data=img_bytes,
+            mime_type="image/png"
+        )
+
+        model = GenerativeModel(model_type)
+
+        response = model.generate_content(
+            [image_part, prompt]
         )
 
         return response.text if response.text else ""
