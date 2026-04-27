@@ -2,14 +2,13 @@ import os
 import re
 import io
 import base64
-from typing import List, Dict, Any, Optional
-
+from typing import List, Dict, Any, Optional, Set
 import numpy as np
 from PIL import Image
 from google import genai
 
 
-GEMINI_MODEL = "gemini-3.1-pro-preview"
+GEMINI_MODEL = "gemini-2.5-pro"
 
 
 class Table:
@@ -71,11 +70,8 @@ class Agents:
     @staticmethod
     def normalize_step(step: str) -> str:
         s = step.strip().lower()
-
-        # remove numbering/bullets handled elsewhere, but keep safe
         s = s.strip().rstrip(".,;:")
 
-        # common synonym normalization
         synonym_map = {
             "refrigerator": "fridge",
             "microwave oven": "microwave",
@@ -84,7 +80,6 @@ class Agents:
         for old, new in synonym_map.items():
             s = s.replace(old, new)
 
-        # normalize common verb phrases
         replacements = [
             ("walk to ", "find "),
             ("go to ", "find "),
@@ -108,20 +103,16 @@ class Agents:
             if s.startswith(old):
                 s = new + s[len(old):]
 
-        # normalize "put X in Y" / "put X on Y" / "place X in Y" -> "put Y"
         put_match = re.match(r"^(put|place)\s+.+\s+(in|into|on|onto)\s+(.+)$", s)
         if put_match:
-            destination = put_match.group(3).strip()
-            destination = destination.rstrip(".,;:")
+            destination = put_match.group(3).strip().rstrip(".,;:")
             return f"put {destination}"
 
-        # normalize "place X" -> "put X"
         if s.startswith("place "):
             s = "put " + s[len("place "):]
 
         return s.strip()
-    
-    
+
     @staticmethod
     def fix_put_actions(plan_steps):
         """
@@ -142,10 +133,9 @@ class Agents:
             if s.startswith("put "):
                 target = s[len("put "):].strip()
 
-                # if model wrote put egg / put mug / etc.,
-                # prefer the last found object as destination
                 non_receptacle_words = {
-                    "egg", "mug", "bowl", "plate", "knife", "glass", "potato", "apple"
+                    "egg", "mug", "cup", "bowl", "plate", "knife", "glass",
+                    "potato", "apple", "bread", "toiletpaper", "laptop"
                 }
 
                 if target in non_receptacle_words and last_found_object is not None:
@@ -158,51 +148,125 @@ class Agents:
 
         return fixed
 
+    # ----------------------------
+    # Scene facts / inventory
+    # ----------------------------
     @staticmethod
-    def extract_scene_facts_from_metadata(objects_metadata: List[Dict[str, Any]]) -> List[str]:
+    def extract_scene_facts_from_metadata(
+        objects_metadata: List[Dict[str, Any]],
+        task_description: Optional[str] = None,
+        max_detailed_facts: int = 30
+    ) -> Dict[str, Any]:
         """
-        Build compact, useful facts for the prompt.
-        Only include the most relevant state/precondition facts.
-        """
-        facts = []
+        Return:
+          {
+            "all_object_names": [...],   # all object types in the scene
+            "detailed_facts": [...]      # compact facts for the most useful objects
+          }
 
-        important_types = {
-            "Egg", "Fridge", "Microwave", "CounterTop", "Cabinet", "Drawer",
-            "StoveBurner", "Pot", "Pan", "Knife", "Mug", "Bowl", "Plate"
+        Design:
+        - always give the model the name of ALL object types in the scene
+        - only give detailed state/precondition facts for the most relevant objects
+        """
+
+        always_keep = {
+            "Fridge", "Microwave", "CounterTop", "Cabinet", "Drawer",
+            "StoveBurner", "StoveKnob", "Faucet", "Sink", "SinkBasin",
+            "GarbageCan", "CoffeeMachine", "ToiletPaper", "Laptop",
+            "Mug", "Cup", "Bowl", "Plate", "Knife", "Pan", "Pot",
+            "Egg", "Bread"
         }
 
+        task_words: Set[str] = set()
+        if task_description:
+            task_words = set(re.findall(r"[a-zA-Z]+", task_description.lower()))
+
+        def is_task_relevant(obj_type: str) -> bool:
+            if not obj_type:
+                return False
+
+            obj_lower = obj_type.lower()
+            if obj_lower in task_words:
+                return True
+
+            aliases = {
+                "cup": {"cup", "mug"},
+                "mug": {"cup", "mug"},
+                "sinkbasin": {"sink", "sinkbasin"},
+                "sink": {"sink", "sinkbasin"},
+                "garbagecan": {"garbagecan", "trashcan", "trash", "bin"},
+                "toiletpaper": {"toiletpaper", "toilet", "paper"},
+                "stoveknob": {"stoveknob", "stove", "knob"},
+                "stoveburner": {"stoveburner", "stove", "burner"},
+                "countertop": {"countertop", "counter"},
+                "coffeemachine": {"coffeemachine", "coffee", "machine"},
+            }
+
+            if obj_lower in aliases:
+                return len(aliases[obj_lower] & task_words) > 0
+
+            return False
+
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
         for obj in objects_metadata:
             obj_type = obj.get("objectType")
-            if obj_type not in important_types:
+            if not obj_type:
                 continue
+            grouped.setdefault(obj_type, []).append(obj)
 
-            obj_id = obj.get("objectId", "")
+        # ALL object names in the whole scene
+        all_object_names = sorted(grouped.keys())
+
+        # Detailed facts only for the most useful objects
+        scored_types = []
+        for obj_type, objs in grouped.items():
+            score = 0
+            if obj_type in always_keep:
+                score += 2
+            if is_task_relevant(obj_type):
+                score += 5
+            if any(o.get("visible", False) for o in objs):
+                score += 2
+            if any(o.get("parentReceptacles") for o in objs):
+                score += 1
+            if any(o.get("isOpen") is not None for o in objs):
+                score += 1
+            if any(o.get("isToggled") is not None for o in objs):
+                score += 1
+
+            scored_types.append((score, obj_type, objs))
+
+        scored_types.sort(key=lambda x: (-x[0], x[1]))
+
+        detailed_facts = []
+        for _, obj_type, objs in scored_types[:max_detailed_facts]:
+            obj = next((o for o in objs if o.get("visible", False)), objs[0])
+
             parent_receptacles = obj.get("parentReceptacles")
             is_open = obj.get("isOpen")
             is_toggled = obj.get("isToggled")
             is_picked = obj.get("isPickedUp")
             visible = obj.get("visible")
 
-            base = f"{obj_type}"
-            details = []
+            details = ["present"]
 
+            if visible is not None:
+                details.append(f"visible={visible}")
             if parent_receptacles:
-                details.append(f"inside/on {parent_receptacles}")
+                details.append(f"inside/on={parent_receptacles}")
             if is_open is not None:
                 details.append(f"open={is_open}")
             if is_toggled is not None:
                 details.append(f"on={is_toggled}")
             if is_picked is not None:
                 details.append(f"picked={is_picked}")
-            if visible is not None:
-                details.append(f"visible={visible}")
 
-            if details:
-                facts.append(f"- {base}: " + ", ".join(details))
-            else:
-                facts.append(f"- {base}: present")
+            detailed_facts.append(f"- {obj_type}: " + ", ".join(details))
 
-        return facts
+        return {
+            "all_object_names": all_object_names,
+            "detailed_facts": detailed_facts,
+        }
 
     @staticmethod
     def format_oracle_objects(objs_from_scene: Optional[List[str]]) -> str:
@@ -224,7 +288,7 @@ class Agents:
         return response.text if response.text else ""
 
     # ----------------------------
-    # Table planners (kept for compatibility)
+    # Table planners
     # ----------------------------
     def single_agent_table_planning(self, model_type: str, file_name_table: str) -> str:
         env_info = Table().get_info_env(file_name_table)
@@ -299,9 +363,8 @@ Use precise object references based on the image.
         model_type: str = GEMINI_MODEL,
     ):
         """
-        Keeps the same spirit as the original code:
         1) scene-understanding stage
-        2) grounding stage with oracle objects
+        2) grounding stage with oracle objects + compact scene facts
         3) final planning stage
 
         Returns:
@@ -309,8 +372,14 @@ Use precise object references based on the image.
         """
 
         oracle_objects_text = self.format_oracle_objects(objs_from_scene)
-        scene_facts = self.extract_scene_facts_from_metadata(objects_metadata or [])
-        scene_facts_text = "\n".join(scene_facts) if scene_facts else "- No extra scene facts available."
+
+        scene_info = self.extract_scene_facts_from_metadata(
+            objects_metadata or [],
+            task_description=self.task_description,
+            max_detailed_facts=30
+        )
+        all_object_names_text = ", ".join(scene_info["all_object_names"])
+        detailed_facts_text = "\n".join(scene_info["detailed_facts"]) if scene_info["detailed_facts"] else "- No detailed facts available."
 
         # ---- Stage 1: image relations / scene understanding ----
         prompt_env = f"""
@@ -320,38 +389,46 @@ Task:
 {self.task_description}
 
 Your job:
-1. Identify the main objects relevant to the task.
-2. Write important relations between them.
-3. Focus on containment and support relations such as:
+1. Identify the main task-relevant objects visible in the image.
+2. Write short relations between them.
+3. Focus on relations such as:
    - inside
    - on
    - in front of
    - left of
    - right of
-4. If an object needed for the task appears to be inside a container or receptacle, mention it.
+4. If a task-relevant object is not visible, say it is not visible in the current image only.
 
 Return short structured statements only.
 """
 
         enviroment_agent_output = self._generate_from_image_and_text(prompt_env, model_type)
 
-        # ---- Stage 2: grounding with oracle objects + metadata facts ----
+        # ---- Stage 2: grounding with oracle objects + scene inventory ----
         prompt_ground = f"""
 You are an assistant that grounds a task in a scene using image evidence and oracle scene information.
 
 Task:
 {self.task_description}
 
-Oracle object types in the scene:
+Oracle object types provided by the benchmark:
 {oracle_objects_text}
 
-Important scene facts from metadata:
-{scene_facts_text}
+All object types present in the scene (source of truth):
+{all_object_names_text}
+
+Important compact scene facts:
+{detailed_facts_text}
 
 Rules:
-- Do not use objects outside the oracle list.
+- Use the all-object scene list as the source of truth for what exists in the scene.
+- If an object is not visible in the image, it may still exist elsewhere in the scene.
+- Do not say an object is absent if it appears in the scene object list.
+- Use exact object names from the scene object list.
+- Do not invent synonyms that are not in the scene object list.
+- If Cup exists, use Cup. If Mug exists, use Mug.
 - If an object is inside a closed receptacle, mention that access requires opening the receptacle first.
-- Mention important preconditions needed to execute the task.
+- Mention only task-relevant preconditions.
 
 Return a concise grounded scene description only.
 """
@@ -375,6 +452,9 @@ Task:
 Grounded environment information:
 {enviroment_info}
 
+All object types present in the scene:
+{all_object_names_text}
+
 Allowed action forms:
 - find <object>
 - pick <object>
@@ -391,15 +471,26 @@ Allowed action forms:
 - pour
 
 Planning rules:
-1. Use only objects that are in the oracle scene list.
-2. Respect action preconditions.
-3. If an object is inside a closed receptacle, first find and open that receptacle.
-4. Only pick an object when it is accessible.
-5. If an appliance is on and the environment requires it to be off before opening, turn it off first.
-6. Return only the plan.
-7. Return one action per line.
-8. Keep actions atomic and executable.
-9. Prefer exact action syntax from the allowed forms.
+1. Use only objects that are in the scene object list.
+2. Use exact object names from the scene object list.
+3. Respect action preconditions.
+4. If an object is inside a closed receptacle, first find and open that receptacle.
+5. Only pick an object when it is accessible.
+6. If an appliance must be off before opening, turn it off first.
+7. If the task has multiple subtasks, complete all subtasks.
+8. Return only the plan.
+9. Return one action per line.
+10. Keep actions atomic and executable.
+11. For put actions, use only the destination receptacle/surface.
+12. Valid examples:
+    - put microwave
+    - put countertop
+    - put garbagecan
+13. Do not output:
+    - put egg
+    - put mug
+    - put cup in microwave
+    - put egg on countertop
 
 Example style:
 find fridge
@@ -426,8 +517,6 @@ put countertop
 
         return enviroment_info, raw_plan, normalized_plan
 
-        return enviroment_info, raw_plan, normalized_plan
-
 
 def run_map(
     scene: str,
@@ -441,7 +530,6 @@ def run_map(
 ):
     """
     Keeps the original run_map spirit, but makes dependencies explicit.
-    This is easier to integrate into your own run_trace.py.
     """
     controller = controller_cls(scene=scene)
     objs_all = all_objs_fn(controller)
