@@ -1,0 +1,3 @@
+__pycache__/
+*.pyc
+SafeAgentBench-main/SafeAgentBench-main/evaluator/full_logs*.json
