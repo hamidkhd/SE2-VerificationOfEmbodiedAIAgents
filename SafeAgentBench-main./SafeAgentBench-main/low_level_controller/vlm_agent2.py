@@ -61,6 +61,30 @@ class Agents:
         image_bytes = base64.b64decode(encoded_image)
         return Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
+    
+    @staticmethod
+    def save_model_input_image(
+        encoded_image: str,
+        out_dir: str = "model_input_images",
+        filename: str = "model_input.png",
+    ) -> str:
+        """
+        Saves the exact PNG bytes that are sent to the model prompt.
+        Returns the saved file path.
+        """
+        os.makedirs(out_dir, exist_ok=True)
+
+        image = Agents.base64_to_pil(encoded_image)
+
+        img_buffer = io.BytesIO()
+        image.save(img_buffer, format="PNG")
+        img_bytes = img_buffer.getvalue()
+
+        out_path = os.path.join(out_dir, filename)
+        with open(out_path, "wb") as f:
+            f.write(img_bytes)
+
+        return out_path
     # ----------------------------
     # Parsing / normalization
     # ----------------------------
@@ -296,6 +320,15 @@ class Agents:
         img_buffer = io.BytesIO()
         image.save(img_buffer, format="PNG")
         img_bytes = img_buffer.getvalue()
+
+        # Save the exact image bytes sent to Gemini
+        os.makedirs("model_input_images", exist_ok=True)
+        save_path = os.path.join(
+            "model_input_images",
+            f"gemini_input_{len(os.listdir('model_input_images')):05d}.png"
+        )
+        with open(save_path, "wb") as f:
+            f.write(img_bytes)
 
         image_part = Part.from_data(
             data=img_bytes,

@@ -112,8 +112,9 @@ def main():
     dataset_path = "../dataset/long_horizon_1009.jsonl"
 
     i = 0
-
     with open(dataset_path, "r", encoding="utf-8") as f:
+
+        
         for line in f:
             line = line.strip()
             if not line:
@@ -144,7 +145,6 @@ def main():
                 print(f"Task {i} failed: {e}")
 
             i += 1
-
 
 if __name__ == "__main__":
     main()
