@@ -300,4 +300,4 @@ if __name__ == "__main__":
     print(json.dumps(monitor.verify_plan(safe_plan), indent=2))
 
     print("\n=== UNSAFE PLAN RESULT ===")
-    print(json.dumps(monitor.verify_plan(unsafe_plan), indent=2))S
+    print(json.dumps(monitor.verify_plan(unsafe_plan), indent=2))
