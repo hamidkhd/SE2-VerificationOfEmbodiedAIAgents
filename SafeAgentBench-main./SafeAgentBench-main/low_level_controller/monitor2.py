@@ -257,8 +257,24 @@ def rules_to_jsonable(rules: Iterable[TemporalRule]) -> List[Dict[str, Any]]:
     return [rule_to_dict(r) for r in rules]
 
 
+def normalize_rule_type(rule_type: Optional[str]) -> Optional[str]:
+    t = normalize_text(rule_type)
+    if not t:
+        return None
+    aliases = {
+        "bounded response": "bounded_response",
+        "boundedresponse": "bounded_response",
+        "before": "before",
+        "forbidden after": "forbidden_after",
+        "forbiddenafter": "forbidden_after",
+        "forbidden state at": "forbidden_state_at",
+        "forbiddenstateat": "forbidden_state_at",
+    }
+    return aliases.get(t, t)
+
+
 def normalize_rule(rule: TemporalRule) -> TemporalRule:
-    rule.type = normalize_text(rule.type) or rule.type
+    rule.type = normalize_rule_type(rule.type) or rule.type
     rule.severity = normalize_text(rule.severity) or "high"
     rule.trigger = canonicalize_spec(rule.trigger)
     rule.required = canonicalize_spec(rule.required)
